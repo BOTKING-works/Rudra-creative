@@ -1,0 +1,129 @@
+services:
+  postgres:
+    image: postgres:16.15-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?set POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set a strong POSTGRES_PASSWORD}
+      APP_DB_USER: ${APP_DB_USER:?set APP_DB_USER}
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD:?set a strong APP_DB_PASSWORD}
+    command: ["postgres", "-c", "shared_buffers=192MB", "-c", "max_connections=30", "-c", "work_mem=4MB", "-c", "maintenance_work_mem=64MB", "-c", "effective_cache_size=768MB"]
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./infrastructure/docker/postgres-init/01-create-app-role.sh:/docker-entrypoint-initdb.d/01-create-app-role.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    mem_limit: 768m
+    cpus: 1.0
+    networks: [private]
+    security_opt: ["no-new-privileges:true"]
+
+  api:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      DEPLOYMENT_STAGE: ${DEPLOYMENT_STAGE:-production}
+      PORT: 4000
+      NODE_OPTIONS: --max-old-space-size=512
+      DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL}
+      PUBLIC_APP_URL: https://${PUBLIC_APP_DOMAIN:?set PUBLIC_APP_DOMAIN}
+      PUBLIC_ADMIN_URL: https://${PUBLIC_ADMIN_DOMAIN:?set PUBLIC_ADMIN_DOMAIN}
+      CORS_ALLOWED_ORIGINS: https://${PUBLIC_APP_DOMAIN},https://${PUBLIC_ADMIN_DOMAIN}
+      SESSION_SECRET: ${SESSION_SECRET:?set SESSION_SECRET}
+      OTP_PEPPER: ${OTP_PEPPER:?set OTP_PEPPER}
+      CSRF_SECRET: ${CSRF_SECRET:?set CSRF_SECRET}
+      SESSION_TTL_HOURS: ${SESSION_TTL_HOURS:-24}
+      OTP_TTL_MINUTES: ${OTP_TTL_MINUTES:-10}
+      OTP_MAX_ATTEMPTS: ${OTP_MAX_ATTEMPTS:-5}
+      OTP_RESEND_COOLDOWN_SECONDS: ${OTP_RESEND_COOLDOWN_SECONDS:-60}
+      OTP_MAX_PER_HOUR: ${OTP_MAX_PER_HOUR:-5}
+      SMTP_HOST: ${SMTP_HOST:?set SMTP_HOST}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_SECURE: ${SMTP_SECURE:-false}
+      SMTP_USER: ${SMTP_USER:?set SMTP_USER}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:?set SMTP_PASSWORD}
+      MAIL_FROM: ${MAIL_FROM:?set MAIL_FROM}
+      R2_ACCOUNT_ID: ${R2_ACCOUNT_ID:-}
+      R2_ACCESS_KEY_ID: ${R2_ACCESS_KEY_ID:-}
+      R2_SECRET_ACCESS_KEY: ${R2_SECRET_ACCESS_KEY:-}
+      R2_BUCKET_NAME: ${R2_BUCKET_NAME:-}
+      R2_PUBLIC_BUCKET_NAME: ${R2_PUBLIC_BUCKET_NAME:-}
+      R2_ENDPOINT: ${R2_ENDPOINT:-}
+      R2_PUBLIC_BASE_URL: ${R2_PUBLIC_BASE_URL:-}
+      R2_PRESIGN_TTL_SECONDS: ${R2_PRESIGN_TTL_SECONDS:-180}
+      R2_UPLOADS_ENABLED: ${R2_UPLOADS_ENABLED:-false}
+      MAX_UPLOAD_BYTES: ${MAX_UPLOAD_BYTES:-52428800}
+      RAZORPAY_KEY_ID: ${RAZORPAY_KEY_ID:-}
+      RAZORPAY_KEY_SECRET: ${RAZORPAY_KEY_SECRET:-}
+      RAZORPAY_WEBHOOK_SECRET: ${RAZORPAY_WEBHOOK_SECRET:-}
+      CASHFREE_APP_ID: ${CASHFREE_APP_ID:-}
+      CASHFREE_SECRET_KEY: ${CASHFREE_SECRET_KEY:-}
+      CASHFREE_WEBHOOK_SECRET: ${CASHFREE_WEBHOOK_SECRET:-}
+      CASHFREE_ENVIRONMENT: ${CASHFREE_ENVIRONMENT:-sandbox}
+      CASHFREE_API_VERSION: ${CASHFREE_API_VERSION:-2026-01-01}
+      PAYMENTS_ENABLED: ${PAYMENTS_ENABLED:-false}
+      BUSINESS_NAME: ${BUSINESS_NAME:-}
+      BUSINESS_ADDRESS: ${BUSINESS_ADDRESS:-}
+      BUSINESS_SUPPORT_EMAIL: ${BUSINESS_SUPPORT_EMAIL:-}
+      BUSINESS_SUPPORT_PHONE: ${BUSINESS_SUPPORT_PHONE:-}
+      BUSINESS_GSTIN: ${BUSINESS_GSTIN:-}
+      DEFAULT_CURRENCY: ${DEFAULT_CURRENCY:-INR}
+      DEFAULT_SHIPPING_FLAT_RATE_PAISE: ${DEFAULT_SHIPPING_FLAT_RATE_PAISE:-0}
+      FREE_SHIPPING_THRESHOLD_PAISE: ${FREE_SHIPPING_THRESHOLD_PAISE:-}
+      DEFAULT_TAX_MODE: ${DEFAULT_TAX_MODE:-EXCLUSIVE}
+      SHIPPING_TAX_RATE_BPS: ${SHIPPING_TAX_RATE_BPS:-}
+      SHIPPING_TAX_CODE: ${SHIPPING_TAX_CODE:-}
+      SHIPPING_TAX_EFFECTIVE_FROM: ${SHIPPING_TAX_EFFECTIVE_FROM:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    expose: ["4000"]
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4000/api/v1/health/ready').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    mem_limit: 768m
+    cpus: 1.0
+    read_only: true
+    tmpfs: ["/tmp:size=32m,noexec,nosuid"]
+    security_opt: ["no-new-privileges:true"]
+    networks: [private, edge]
+
+  web:
+    build:
+      context: .
+      dockerfile: infrastructure/docker/web.Dockerfile
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      PUBLIC_APP_DOMAIN: ${PUBLIC_APP_DOMAIN:?set PUBLIC_APP_DOMAIN}
+      PUBLIC_ADMIN_DOMAIN: ${PUBLIC_ADMIN_DOMAIN:?set PUBLIC_ADMIN_DOMAIN}
+    volumes:
+      - caddy_data:/data
+      - caddy_config:/config
+    ports: ["80:80", "443:443"]
+    mem_limit: 128m
+    cpus: 0.5
+    security_opt: ["no-new-privileges:true"]
+    networks: [edge]
+
+volumes:
+  caddy_data:
+  caddy_config:
+  postgres_data:
+networks:
+  private:
+    internal: true
+  edge:
+    internal: false

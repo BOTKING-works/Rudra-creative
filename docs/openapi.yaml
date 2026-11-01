@@ -1,0 +1,942 @@
+openapi: 3.1.0
+info:
+  title: Rudra Creative Commerce API
+  version: 0.1.0
+  description: >-
+    REST API for the India-focused 3D-printing storefront and admin console.
+    Mutating browser requests require an allowlisted Origin, the CSRF cookie,
+    and a matching X-CSRF-Token header. Customer resources are scoped to the
+    authenticated session. Prices are integer paise and checkout currency is INR.
+servers:
+  - url: https://{storefrontDomain}/api/v1
+    description: Production API through the storefront reverse proxy
+    variables:
+      storefrontDomain:
+        default: shop.example.invalid
+  - url: http://localhost:4000/api/v1
+    description: Local development
+security: []
+tags:
+  - name: Health
+  - name: Authentication
+  - name: Catalog
+  - name: Commerce
+  - name: Custom printing
+  - name: Payments
+  - name: Content
+  - name: Admin
+paths:
+  /health/live:
+    get:
+      tags: [Health]
+      summary: Liveness probe
+      responses:
+        '200': { description: API process is alive }
+  /health/ready:
+    get:
+      tags: [Health]
+      summary: Readiness probe including PostgreSQL connectivity
+      responses:
+        '200': { description: Service ready }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /auth/csrf:
+    get:
+      tags: [Authentication]
+      summary: Issue a signed CSRF token and cookie
+      responses:
+        '200':
+          description: CSRF token issued
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [csrfToken]
+                properties:
+                  csrfToken: { type: string }
+  /auth/register:
+    post:
+      tags: [Authentication]
+      summary: Register a customer and send an email OTP
+      parameters: [{ $ref: '#/components/parameters/CsrfHeader' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email, maxLength: 254 }
+                password: { type: string, minLength: 12, maxLength: 128 }
+      responses:
+        '201': { description: Account created; OTP challenge identifier returned, but never the OTP itself }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+  /auth/verify-email-otp:
+    post:
+      tags: [Authentication]
+      summary: Consume an email verification challenge and sign in
+      parameters: [{ $ref: '#/components/parameters/CsrfHeader' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [challengeId, otp]
+              properties:
+                challengeId: { type: string }
+                otp: { type: string, pattern: '^\\d{6}$' }
+      responses:
+        '200': { description: Email verified and session cookie established }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+  /auth/verify-admin-login-otp:
+    post:
+      tags: [Authentication]
+      summary: Consume an administrator sign-in OTP and establish the privileged session
+      parameters: [{ $ref: '#/components/parameters/CsrfHeader' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [challengeId, otp]
+              properties:
+                challengeId: { type: string }
+                otp: { type: string, pattern: '^\\d{6}$' }
+      responses:
+        '200': { description: Administrator session established after successful OTP verification }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+  /auth/resend-email-otp:
+    post:
+      tags: [Authentication]
+      summary: Request a verification OTP resend
+      parameters: [{ $ref: '#/components/parameters/CsrfHeader' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties: { email: { type: string, format: email } }
+      responses:
+        '202': { description: Resend accepted or generic response returned }
+        '429': { $ref: '#/components/responses/RateLimited' }
+  /auth/login:
+    post:
+      tags: [Authentication]
+      summary: Create a customer session or start administrator email-OTP verification
+      parameters: [{ $ref: '#/components/parameters/CsrfHeader' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string, maxLength: 128 }
+      responses:
+        '200': { description: Customer session established; secure HttpOnly session cookie set }
+        '202': { description: Administrator password accepted; challengeId returned and no session is created until OTP verification }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { description: Email verification required }
+  /auth/me:
+    get:
+      tags: [Authentication]
+      security: [{ sessionCookie: [] }]
+      responses:
+        '200': { description: Current user DTO or null }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /auth/logout:
+    post:
+      tags: [Authentication]
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/CsrfHeader' }]
+      responses:
+        '200': { description: Session revoked and cookie cleared }
+  /auth/forgot-password:
+    post:
+      tags: [Authentication]
+      summary: Request password-reset instructions
+      parameters: [{ $ref: '#/components/parameters/CsrfHeader' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties: { email: { type: string, format: email } }
+      responses:
+        '202': { description: Generic response to limit account enumeration }
+  /auth/reset-password:
+    post:
+      tags: [Authentication]
+      parameters: [{ $ref: '#/components/parameters/CsrfHeader' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, token, newPassword]
+              properties:
+                email: { type: string, format: email }
+                token: { type: string, minLength: 32 }
+                newPassword: { type: string, minLength: 12, maxLength: 128 }
+      responses:
+        '200': { description: Password updated and existing sessions revoked }
+        '400': { $ref: '#/components/responses/BadRequest' }
+  /categories:
+    get:
+      tags: [Catalog]
+      summary: List active categories
+      responses:
+        '200': { description: Category array }
+  /products:
+    get:
+      tags: [Catalog]
+      summary: Search/filter active products
+      parameters:
+        - { name: q, in: query, schema: { type: string, maxLength: 100 } }
+        - { name: category, in: query, schema: { type: string } }
+        - { name: material, in: query, schema: { type: string } }
+        - { name: color, in: query, schema: { type: string } }
+        - { name: minPrice, in: query, description: Integer paise, schema: { type: integer, minimum: 0 } }
+        - { name: maxPrice, in: query, description: Integer paise, schema: { type: integer, minimum: 0 } }
+        - { name: availability, in: query, schema: { type: string, enum: [in-stock, all], default: all } }
+        - { name: sort, in: query, schema: { type: string, enum: [relevance, price-asc, price-desc, newest, name], default: newest } }
+        - { name: page, in: query, schema: { type: integer, minimum: 1, default: 1 } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 48, default: 24 } }
+      responses:
+        '200': { description: Product array and pagination data }
+        '400': { $ref: '#/components/responses/BadRequest' }
+  /search:
+    get:
+      tags: [Catalog]
+      summary: Search alias for product listing
+      responses:
+        '200': { description: Product array and pagination data }
+  /products/{slug}:
+    get:
+      tags: [Catalog]
+      parameters: [{ $ref: '#/components/parameters/Slug' }]
+      responses:
+        '200': { description: Product detail with related products }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /cart:
+    get:
+      tags: [Commerce]
+      security: [{ sessionCookie: [] }]
+      responses:
+        '200': { description: Current customer's persisted cart with server prices }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /cart/items:
+    post:
+      tags: [Commerce]
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/CsrfHeader' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [variantId, quantity]
+              properties:
+                variantId: { type: string }
+                quantity: { type: integer, minimum: 1, maximum: 20 }
+      responses:
+        '201': { description: Cart updated }
+        '409': { description: Variant unavailable or insufficient stock }
+  /cart/items/{id}:
+    patch:
+      tags: [Commerce]
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - { $ref: '#/components/parameters/CsrfHeader' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [quantity]
+              properties: { quantity: { type: integer, minimum: 1, maximum: 20 } }
+      responses:
+        '200': { description: Cart updated }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [Commerce]
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - { $ref: '#/components/parameters/CsrfHeader' }
+      responses:
+        '200': { description: Cart updated }
+  /addresses:
+    get:
+      tags: [Commerce]
+      security: [{ sessionCookie: [] }]
+      responses:
+        '200': { description: Current customer's saved Indian delivery addresses }
+    post:
+      tags: [Commerce]
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/CsrfHeader' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AddressInput' }
+      responses:
+        '201': { description: Address saved }
+        '400': { $ref: '#/components/responses/BadRequest' }
+  /addresses/{id}:
+    delete:
+      tags: [Commerce]
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - { $ref: '#/components/parameters/CsrfHeader' }
+      responses:
+        '204': { description: Address deleted }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /checkout:
+    post:
+      tags: [Commerce, Payments]
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/CsrfHeader' }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [addressId, provider]
+              properties:
+                addressId: { type: string }
+                provider: { type: string, enum: [RAZORPAY, CASHFREE] }
+                customerNote: { type: string, maxLength: 1000 }
+      responses:
+        '201': { description: Server-priced order and provider checkout session }
+        '409': { description: Stock changed, tax is unconfigured, or idempotency conflict }
+        '502': { description: Provider request uncertain; inspect order status before retrying }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /orders:
+    get:
+      tags: [Commerce]
+      security: [{ sessionCookie: [] }]
+      responses:
+        '200': { description: Current customer's order history (most recent 50) }
+  /orders/{id}:
+    get:
+      tags: [Commerce]
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/OrderId' }]
+      responses:
+        '200': { description: Owned order detail }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /custom-print/requests:
+    post:
+      tags: [Custom printing]
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/CsrfHeader' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [assetIds]
+              properties:
+                material: { type: string, maxLength: 60 }
+                color: { type: string, maxLength: 60 }
+                quantity: { type: integer, minimum: 1, maximum: 1000, default: 1 }
+                dimensionsMm: { type: object, properties: { x: { type: number, exclusiveMinimum: 0 }, y: { type: number, exclusiveMinimum: 0 }, z: { type: number, exclusiveMinimum: 0 }, unit: { const: mm } } }
+                instructions: { type: string, maxLength: 5000 }
+                desiredBy: { type: string, format: date-time }
+                assetIds: { type: array, minItems: 1, maxItems: 10, items: { type: string } }
+      responses:
+        '201': { description: Custom-print request created from owned quarantined assets }
+        '400': { $ref: '#/components/responses/BadRequest' }
+    get:
+      tags: [Custom printing]
+      security: [{ sessionCookie: [] }]
+      responses:
+        '200': { description: Current customer's custom-print requests }
+  /custom-print/requests/{id}:
+    get:
+      tags: [Custom printing]
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/RequestId' }]
+      responses:
+        '200': { description: Owned request, visible quotations and linked order summary }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /custom-print/requests/{id}/accept-quote:
+    post:
+      tags: [Custom printing]
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/RequestId' }
+        - { $ref: '#/components/parameters/CsrfHeader' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [quotationId], properties: { quotationId: { type: string } } }
+      responses:
+        '200': { description: Quotation accepted and one payable order created }
+        '409': { description: Quote expired, already processed or unavailable }
+  /custom-print/requests/{id}/pay:
+    post:
+      tags: [Custom printing, Payments]
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/RequestId' }
+        - { $ref: '#/components/parameters/CsrfHeader' }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [addressId, provider], properties: { addressId: { type: string }, provider: { type: string, enum: [RAZORPAY, CASHFREE] } } }
+      responses:
+        '201': { description: Provider checkout initialized }
+        '409': { description: Existing payment attempt or invalid request state }
+  /custom-print/requests/{id}/decline-quote:
+    post:
+      tags: [Custom printing]
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/RequestId' }
+        - { $ref: '#/components/parameters/CsrfHeader' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [quotationId], properties: { quotationId: { type: string }, reason: { type: string, maxLength: 1000 } } }
+      responses:
+        '200': { description: Quotation declined; request remains eligible for a revised quote }
+        '409': { description: Quote unavailable }
+  /payments/orders/{id}:
+    get:
+      tags: [Payments]
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/OrderId' }]
+      responses:
+        '200': { description: Owned order payment/status summary }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /payments/verify/razorpay:
+    post:
+      tags: [Payments]
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/CsrfHeader' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [orderId, razorpay_order_id, razorpay_payment_id, razorpay_signature]
+              properties:
+                orderId: { type: string }
+                razorpay_order_id: { type: string }
+                razorpay_payment_id: { type: string }
+                razorpay_signature: { type: string, pattern: '^[a-fA-F0-9]{64}$' }
+      responses:
+        '200': { description: Provider-side captured payment verified and order transitioned }
+        '409': { description: Provider did not confirm captured payment matching the order }
+  /payments/verify/cashfree:
+    post:
+      tags: [Payments]
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/CsrfHeader' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [orderId], properties: { orderId: { type: string } } }
+      responses:
+        '200': { description: Provider-side successful payment verified and order transitioned }
+        '409': { description: Provider has not confirmed a successful matching payment }
+  /payments/webhooks/razorpay:
+    post:
+      tags: [Payments]
+      summary: Razorpay webhook endpoint (raw-body HMAC verification; CSRF exempt)
+      security: []
+      parameters:
+        - { name: x-razorpay-signature, in: header, required: true, schema: { type: string } }
+        - { name: x-razorpay-event-id, in: header, required: false, schema: { type: string } }
+      requestBody: { required: true, content: { application/json: { schema: { type: object, additionalProperties: true } } } }
+      responses:
+        '200': { description: Verified event acknowledged after processing }
+        '401': { description: Webhook signature invalid }
+        '503': { description: Transient event reconciliation; provider retry is required }
+  /payments/webhooks/cashfree:
+    post:
+      tags: [Payments]
+      summary: Cashfree webhook endpoint (timestamp + raw-body HMAC verification; CSRF exempt)
+      security: []
+      parameters:
+        - { name: x-webhook-timestamp, in: header, required: true, schema: { type: string } }
+        - { name: x-webhook-signature, in: header, required: true, schema: { type: string } }
+      requestBody: { required: true, content: { application/json: { schema: { type: object, additionalProperties: true } } } }
+      responses:
+        '200': { description: Verified event acknowledged after processing }
+        '401': { description: Webhook signature invalid }
+        '503': { description: Transient event reconciliation; provider retry is required }
+  /content/{slug}:
+    get:
+      tags: [Content]
+      parameters: [{ $ref: '#/components/parameters/Slug' }]
+      responses:
+        '200': { description: Published plain-text page only }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /admin/orders:
+    get:
+      tags: [Admin]
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: status, in: query, schema: { type: string } }
+        - { name: page, in: query, schema: { type: integer, minimum: 1, default: 1 } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 50 } }
+      responses:
+        '200': { description: Paginated admin order and payment visibility DTOs }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /admin/orders/{id}/fulfillment:
+    patch:
+      tags: [Admin]
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - { $ref: '#/components/parameters/CsrfHeader' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status: { type: string, enum: [IN_PRODUCTION, READY_TO_SHIP, SHIPPED, DELIVERED] }
+                carrier: { type: string, maxLength: 100 }
+                trackingNumber: { type: string, maxLength: 160 }
+                trackingUrl: { type: string, format: uri }
+                notes: { type: string, maxLength: 1000 }
+      responses:
+        '200': { description: Fulfillment transition applied and audit event written }
+        '409': { description: Invalid or stale state transition }
+  /admin/products:
+    get:
+      tags: [Admin]
+      security: [{ sessionCookie: [] }]
+      responses:
+        '200': { description: Product list for admin editing }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      tags: [Admin]
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/CsrfHeader' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProductInput' }
+      responses:
+        '201': { description: Product created and audit event recorded }
+        '400': { $ref: '#/components/responses/BadRequest' }
+  /admin/products/{id}:
+    patch:
+      tags: [Admin]
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - { $ref: '#/components/parameters/CsrfHeader' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProductPatch' }
+      responses:
+        '200': { description: Product updated }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /admin/products/{id}/variants:
+    post:
+      tags: [Admin]
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - { $ref: '#/components/parameters/CsrfHeader' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [sku, name, pricePaise, stockQuantity]
+              properties:
+                sku: { type: string, maxLength: 80 }
+                name: { type: string, maxLength: 120 }
+                material: { type: [string, 'null'] }
+                color: { type: [string, 'null'] }
+                pricePaise: { type: integer, minimum: 0 }
+                salePricePaise: { type: [integer, 'null'], minimum: 0 }
+                stockQuantity: { type: integer, minimum: 0 }
+                isActive: { type: boolean, default: true }
+      responses:
+        '201': { description: Variant created with inventory movement record }
+  /admin/inventory/movements:
+    get:
+      tags: [Admin]
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: variantId, in: query, schema: { type: string } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 20 } }
+        - { name: page, in: query, schema: { type: integer, minimum: 1, default: 1 } }
+      responses:
+        '200': { description: Paginated stock movement history including variant and product labels }
+  /admin/inventory/adjustments:
+    post:
+      tags: [Admin]
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/CsrfHeader' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [variantId, delta, reason]
+              properties:
+                variantId: { type: string }
+                delta: { type: integer, minimum: -1000000, maximum: 1000000, not: { const: 0 } }
+                reason: { type: string, enum: [RESTOCK, RECOUNT, DAMAGED, RETURNED, MANUAL_CORRECTION] }
+                note: { type: string, maxLength: 1000 }
+      responses:
+        '201': { description: Atomic stock update, inventory movement record and audit log created }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { description: Adjustment would violate stock/reservation constraints }
+  /admin/custom-print:
+    get:
+      tags: [Admin]
+      security: [{ sessionCookie: [] }]
+      parameters: [{ name: status, in: query, schema: { type: string } }]
+      responses:
+        '200': { description: Custom-print review queue }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /admin/custom-print/{id}/status:
+    patch:
+      tags: [Admin]
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - { $ref: '#/components/parameters/CsrfHeader' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status: { type: string, enum: [UNDER_REVIEW, NEEDS_CLARIFICATION, REJECTED, CANCELLED] }
+                adminNotes: { type: string, maxLength: 5000 }
+                rejectionReason: { type: string, maxLength: 1000 }
+      responses:
+        '200': { description: Request state updated and audited }
+        '409': { description: Invalid state transition }
+  /admin/custom-print/{id}/quotations:
+    post:
+      tags: [Admin]
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - { $ref: '#/components/parameters/CsrfHeader' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [subtotalPaise, shippingPaise, taxPaise, leadTimeDays, expiresAt]
+              properties:
+                subtotalPaise: { type: integer, minimum: 0 }
+                shippingPaise: { type: integer, minimum: 0 }
+                taxPaise: { type: integer, minimum: 0 }
+                leadTimeDays: { type: integer, minimum: 0, maximum: 365 }
+                expiresAt: { type: string, format: date-time }
+                terms: { type: string, maxLength: 5000 }
+      responses:
+        '201': { description: Quotation sent if email is confirmed; otherwise draft remains }
+        '409': { description: Request is no longer quoteable }
+  /admin/content:
+    get:
+      tags: [Admin]
+      security: [{ sessionCookie: [] }]
+      responses:
+        '200': { description: Content-page index }
+  /admin/content/{slug}:
+    get:
+      tags: [Admin]
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/Slug' }]
+      responses:
+        '200': { description: Page draft and revision metadata }
+        '404': { $ref: '#/components/responses/NotFound' }
+    put:
+      tags: [Admin]
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/Slug' }
+        - { $ref: '#/components/parameters/CsrfHeader' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title, body]
+              properties:
+                title: { type: string, maxLength: 180 }
+                body: { type: string, maxLength: 50000 }
+                status: { type: string, enum: [DRAFT, PUBLISHED, ARCHIVED], default: DRAFT }
+                changeNote: { type: string, maxLength: 500 }
+      responses:
+        '200': { description: Content saved and revision recorded }
+        '409': { description: Placeholder publication blocked }
+  /uploads/presign:
+    post:
+      tags: [Custom printing]
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/CsrfHeader' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [fileName, contentType, sizeBytes, purpose]
+              properties:
+                fileName: { type: string, maxLength: 255 }
+                contentType: { type: string, maxLength: 120 }
+                sizeBytes: { type: integer, minimum: 1 }
+                purpose: { type: string, enum: [CUSTOM_PRINT_MODEL, REFERENCE_IMAGE, PRODUCT_IMAGE] }
+      responses:
+        '201': { description: Short-lived signed PUT URL with required content-type and signed ownership-metadata headers; all files start in private storage }
+        '400': { $ref: '#/components/responses/BadRequest' }
+  /admin/assets/pending-product-images:
+    get:
+      tags: [Admin]
+      security: [{ sessionCookie: [] }]
+      responses:
+        '200': { description: Quarantined product images awaiting administrator review }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /admin/assets/{id}/approve-product-image:
+    post:
+      tags: [Admin]
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - { $ref: '#/components/parameters/CsrfHeader' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [productId, altText]
+              properties:
+                productId: { type: string }
+                altText: { type: string, minLength: 3, maxLength: 240 }
+                sortOrder: { type: integer, minimum: 0, maximum: 1000, default: 0 }
+                isPrimary: { type: boolean, default: false }
+      responses:
+        '201': { description: Image copied from private storage to public storage, verified and linked to the product }
+        '409': { description: Asset metadata or review state mismatch }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /admin/assets/{id}/reject-product-image:
+    post:
+      tags: [Admin]
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - { $ref: '#/components/parameters/CsrfHeader' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [reason], properties: { reason: { type: string, minLength: 3, maxLength: 500 } } }
+      responses:
+        '200': { description: Quarantined image rejected and cleanup attempted }
+        '409': { description: Asset review state changed }
+  /admin/products/{productId}/images/{imageId}:
+    delete:
+      tags: [Admin]
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: productId, in: path, required: true, schema: { type: string } }
+        - { name: imageId, in: path, required: true, schema: { type: string } }
+        - { $ref: '#/components/parameters/CsrfHeader' }
+      responses:
+        '204': { description: Image relation removed, asset marked deleted, object cleanup attempted }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /admin/assets/{id}/download:
+    get:
+      tags: [Admin]
+      security: [{ sessionCookie: [] }]
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses:
+        '200': { description: Short-lived signed attachment URL }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /uploads/complete:
+    post:
+      tags: [Custom printing]
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/CsrfHeader' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [assetId], properties: { assetId: { type: string } } }
+      responses:
+        '200': { description: Asset metadata and file signature checked; asset remains quarantined }
+        '400': { $ref: '#/components/responses/BadRequest' }
+components:
+  securitySchemes:
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: __Host-rudra_session
+      description: >-
+        Production cookie name. Local development uses rudra_session without the __Host- prefix.
+        The browser session is server-side and is not a bearer token in JavaScript storage.
+  parameters:
+    CsrfHeader:
+      name: X-CSRF-Token
+      in: header
+      required: true
+      description: Must match the CSRF cookie issued by GET /auth/csrf.
+      schema: { type: string }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: Unique per logical checkout attempt; use the same key on retries of the same request.
+      schema: { type: string, minLength: 16, maxLength: 120, pattern: '^[A-Za-z0-9._:-]+$' }
+    Slug:
+      name: slug
+      in: path
+      required: true
+      schema: { type: string }
+    OrderId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string }
+    RequestId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string }
+  responses:
+    BadRequest:
+      description: Request validation failed
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+    Unauthorized:
+      description: Authentication is required or credentials are invalid
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+    Forbidden:
+      description: Authenticated account lacks permission
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+    NotFound:
+      description: Resource not found or not owned by this session
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+    RateLimited:
+      description: Request rate limit exceeded
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+    ServiceUnavailable:
+      description: Dependent service unavailable or state needs reconciliation
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+  schemas:
+    ErrorEnvelope:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code: { type: string }
+            message: { type: string }
+    AddressInput:
+      type: object
+      required: [fullName, phone, line1, locality, city, state, pinCode]
+      properties:
+        label: { type: string, maxLength: 60 }
+        fullName: { type: string, minLength: 2, maxLength: 120 }
+        phone: { type: string, pattern: '^(?:\\+91[- ]?)?[6-9]\\d{9}$' }
+        line1: { type: string, minLength: 3, maxLength: 200 }
+        line2: { type: string, maxLength: 200 }
+        locality: { type: string, minLength: 2, maxLength: 120 }
+        city: { type: string, minLength: 2, maxLength: 100 }
+        state: { type: string, description: Indian state or union territory }
+        pinCode: { type: string, pattern: '^\\d{6}$' }
+        deliveryNotes: { type: string, maxLength: 500 }
+        isDefault: { type: boolean, default: false }
+    ProductInput:
+      type: object
+      required: [name, slug, sku, description, basePricePaise]
+      properties:
+        name: { type: string, minLength: 2, maxLength: 160 }
+        slug: { type: string, pattern: '^[a-z0-9]+(?:-[a-z0-9]+)*$' }
+        sku: { type: string, maxLength: 80 }
+        description: { type: string, maxLength: 20000 }
+        categoryId: { type: [string, 'null'] }
+        basePricePaise: { type: integer, minimum: 0 }
+        salePricePaise: { type: [integer, 'null'], minimum: 0 }
+        leadTimeDays: { type: integer, minimum: 0, maximum: 365, default: 3 }
+        weightGrams: { type: [integer, 'null'], minimum: 1 }
+        status: { type: string, enum: [DRAFT, ACTIVE, ARCHIVED], default: DRAFT }
+        taxCode: { type: [string, 'null'] }
+        taxRateBps: { type: [integer, 'null'], minimum: 0, maximum: 10000 }
+        taxEffectiveFrom: { type: [string, 'null'], format: date-time }
+    ProductPatch:
+      type: object
+      description: Partial update. When changing tax settings, supply the approved code, rate, and effective date together.
+      minProperties: 1
+      properties:
+        name: { type: string, minLength: 2, maxLength: 160 }
+        slug: { type: string, pattern: '^[a-z0-9]+(?:-[a-z0-9]+)*$' }
+        sku: { type: string, maxLength: 80 }
+        description: { type: string, maxLength: 20000 }
+        categoryId: { type: [string, 'null'] }
+        basePricePaise: { type: integer, minimum: 0 }
+        salePricePaise: { type: [integer, 'null'], minimum: 0 }
+        leadTimeDays: { type: integer, minimum: 0, maximum: 365 }
+        weightGrams: { type: [integer, 'null'], minimum: 1 }
+        status: { type: string, enum: [DRAFT, ACTIVE, ARCHIVED] }
+        taxCode: { type: [string, 'null'] }
+        taxRateBps: { type: [integer, 'null'], minimum: 0, maximum: 10000 }
+        taxEffectiveFrom: { type: [string, 'null'], format: date-time }

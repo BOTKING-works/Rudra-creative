@@ -1,0 +1,16 @@
+node_modules/
+**/node_modules/
+**/dist/
+**/.vite/
+.env
+.env.*
+!.env.example
+*.log
+coverage/
+playwright-report/
+test-results/
+.DS_Store
+*.pem
+*.key
+backups/
+*.dump

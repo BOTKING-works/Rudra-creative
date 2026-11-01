@@ -1,0 +1,44 @@
+{$PUBLIC_APP_DOMAIN} {
+  encode zstd gzip
+  header {
+    X-Content-Type-Options nosniff
+    Strict-Transport-Security "max-age=31536000"
+    Referrer-Policy strict-origin-when-cross-origin
+    Permissions-Policy "camera=(), microphone=(), geolocation=()"
+    X-Frame-Options DENY
+    Content-Security-Policy "default-src 'self'; script-src 'self' https://checkout.razorpay.com https://sdk.cashfree.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; img-src 'self' https: data:; connect-src 'self' https://*.r2.cloudflarestorage.com https://*.razorpay.com https://*.cashfree.com; frame-src https://*.razorpay.com https://*.cashfree.com; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self' https://*.razorpay.com https://*.cashfree.com; upgrade-insecure-requests"
+    -Server
+  }
+  @api path /api/*
+  handle @api {
+    reverse_proxy api:4000
+  }
+  handle {
+    root * /srv/storefront
+    try_files {path} {path}/ /index.html
+    file_server
+  }
+}
+
+{$PUBLIC_ADMIN_DOMAIN} {
+  encode zstd gzip
+  header {
+    X-Content-Type-Options nosniff
+    Strict-Transport-Security "max-age=31536000"
+    Referrer-Policy no-referrer
+    Permissions-Policy "camera=(), microphone=(), geolocation=()"
+    X-Frame-Options DENY
+    X-Robots-Tag "noindex, nofollow, noarchive"
+    Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; img-src 'self' https: data:; connect-src 'self' https://*.r2.cloudflarestorage.com; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'; upgrade-insecure-requests"
+    -Server
+  }
+  @api path /api/*
+  handle @api {
+    reverse_proxy api:4000
+  }
+  handle {
+    root * /srv/admin
+    try_files {path} {path}/ /index.html
+    file_server
+  }
+}

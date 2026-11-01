@@ -1,0 +1,32 @@
+{
+  "name": "rudra-creative-3d-commerce",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Secure India-focused 3D-printing e-commerce platform",
+  "workspaces": [
+    "frontend",
+    "admin",
+    "backend"
+  ],
+  "engines": {
+    "node": ">=24.22.2 <25",
+    "npm": ">=11.19.1 <12"
+  },
+  "scripts": {
+    "dev:storefront": "npm --workspace frontend run dev",
+    "dev:admin": "npm --workspace admin run dev",
+    "dev:api": "npm --workspace backend run dev",
+    "build": "npm run build --workspace backend && npm run build --workspace frontend && npm run build --workspace admin",
+    "test": "npm run test --workspace backend && npm run test --workspace frontend && npm run test --workspace admin",
+    "typecheck": "npm run typecheck --workspace backend && npm run typecheck --workspace frontend && npm run typecheck --workspace admin",
+    "prisma:generate": "npm --workspace backend run prisma:generate",
+    "db:migrate": "npm --workspace backend run db:migrate",
+    "db:seed": "npm --workspace backend run db:seed",
+    "lock:refresh": "npm install --package-lock-only --ignore-scripts --no-fund",
+    "security:deps": "npm audit --audit-level=moderate && npm audit --omit=dev --audit-level=moderate",
+    "check": "npm run deps:check && npm run security:deps && npm run prisma:generate && npm run prisma:validate && npm run typecheck && npm run test && npm run build",
+    "secure:release": "sh ./scripts/secure-deps.sh",
+    "prisma:validate": "npm --workspace backend exec -- prisma validate --schema prisma/schema.prisma",
+    "deps:check": "node scripts/check-dependency-pins.mjs"
+  }
+}

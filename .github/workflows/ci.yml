@@ -1,0 +1,37 @@
+name: CI
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    env:
+      DATABASE_URL: postgresql://commerce:commerce_local_only@127.0.0.1:5432/commerce?schema=public
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.22.2
+      - name: Enforce exact direct dependency pins
+        run: npm run deps:check
+      - name: Require reviewed lockfile
+        run: |
+          test -s package-lock.json || { echo "Missing package-lock.json. Generate it on a connected trusted machine, review it, and commit it before CI or release." >&2; exit 1; }
+      - name: Clean install from reviewed lockfile
+        run: npm ci --no-fund
+      - name: Audit all dependencies
+        run: npm audit --audit-level=moderate
+      - name: Audit production dependencies
+        run: npm audit --omit=dev --audit-level=moderate
+      - name: Generate Prisma Client
+        run: npm run prisma:generate
+      - name: Validate Prisma schema
+        run: npm --workspace backend exec -- prisma validate --schema prisma/schema.prisma
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Test
+        run: npm run test
+      - name: Build
+        run: npm run build
