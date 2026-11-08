@@ -16,7 +16,7 @@
     "admin:bootstrap": "dotenv -e ../.env -- tsx src/modules/auth/bootstrap-admin.ts"
   },
   "dependencies": {
-    "@aws-sdk/client-s3": "3.1161.0",
+    "@aws-sdk/client-s3": "3.1162.0",
     "@aws-sdk/s3-request-presigner": "3.1161.0",
     "@prisma/client": "6.19.3",
     "argon2": "0.45.1",
